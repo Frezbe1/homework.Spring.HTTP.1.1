@@ -6,7 +6,10 @@ import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -15,10 +18,12 @@ public class Server {
     private final int SERVER_SOCKET;
     private final List<String> validPaths = List.of("/index.html", "/spring.svg", "/spring.png", "/resources.html", "/styles.css", "/app.js", "/links.html", "/forms.html", "/classic.html", "/events.html", "/events.js");
     private final ExecutorService executorService;
+    private final ConcurrentHashMap<String, Map<String, Handler>> handlers;
 
     public Server(int serverSocket, int threadPoolSize) {
         this.SERVER_SOCKET = serverSocket;
         this.executorService = Executors.newFixedThreadPool(threadPoolSize);
+        handlers = new ConcurrentHashMap<>();
     }
 
     void start() {
@@ -29,10 +34,12 @@ public class Server {
             }
         } catch (IOException e) {
             throw new RuntimeException(e);
+        } finally {
+            executorService.shutdown();
         }
     }
 
-    public void proceedConnection(Socket socket) {
+    private void proceedConnection(Socket socket) {
         try (final var in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
              final var out = new BufferedOutputStream(socket.getOutputStream())) {
 
@@ -47,18 +54,35 @@ public class Server {
                 return;
             }
 
+            String method = parts[0];
             final var path = parts[1];
-            if (!validPaths.contains(path)) {
-                out.write((
-                        "HTTP/1.1 404 Not Found\r\n" +
-                                "Content-Length: 0\r\n" +
-                                "Connection: close\r\n" +
-                                "\r\n"
-                ).getBytes());
-                out.flush();
+            Request request = createRequest(method, path);
+
+            if (request == null || !handlers.containsKey(request.getMethod())) {
+                responseWithoutContent(out, "400", "Bad Request");
                 return;
             }
 
+            Map<String, Handler> handlerMap = handlers.get(request.getMethod());
+            String requestPath = request.getPath();
+            if (handlerMap.containsKey(requestPath)) {
+                Handler handler = handlerMap.get(requestPath);
+                handler.handle(request, out);
+            } else {  // Defaults
+                // Resource not found
+                if (!validPaths.contains(request.getPath())) {
+                    responseWithoutContent(out, "404", "Not Found");
+                } else {
+                    defaultHandler(out, path);
+                }
+            }
+
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+        void defaultHandler(BufferedOutputStream out, String path) throws IOException {
             final var filePath = Path.of(".", "public", path);
             final var mimeType = Files.probeContentType(filePath);
 
@@ -69,17 +93,16 @@ public class Server {
                         "{time}",
                         LocalDateTime.now().toString()
                 ).getBytes();
-                out.write((
-                        "HTTP/1.1 200 OK\r\n" +
-                                "Content-Type: " + mimeType + "\r\n" +
-                                "Content-Length: " + content.length + "\r\n" +
-                                "Connection: close\r\n" +
-                                "\r\n"
-                ).getBytes());
-                out.write(content);
-                out.flush();
-                return;
-            }
+            out.write((
+                    "HTTP/1.1 200 OK\r\n" +
+                            "Content-Type: " + mimeType + "\r\n" +
+                            "Content-Length: " + content.length + "\r\n" +
+                            "Connection: close\r\n" +
+                            "\r\n"
+            ).getBytes());
+            out.write(content);
+            out.flush();
+        }
 
             final var length = Files.size(filePath);
             out.write((
@@ -91,9 +114,31 @@ public class Server {
             ).getBytes());
             Files.copy(filePath, out);
             out.flush();
-
-        } catch (IOException e) {
-            throw new RuntimeException();
         }
+
+    private Request createRequest(String method, String path) {
+        if (method != null && !method.isBlank()) {
+            return new Request(method, path);
+        } else {
+            return null;
+        }
+
+    }
+
+    void addHandler(String method, String path, Handler handler) {
+        if (!handlers.containsKey(method)) {
+            handlers.put(method, new HashMap<>());
+        }
+        handlers.get(method).put(path, handler);
+    }
+
+    void responseWithoutContent(BufferedOutputStream out, String responseCode, String responseStatus) throws IOException {
+        out.write((
+                "HTTP/1.1 " + responseCode + " " + responseStatus + "\r\n" +
+                        "Content-Length: 0\r\n" +
+                        "Connection: close\r\n" +
+                        "\r\n"
+        ).getBytes());
+        out.flush();
     }
 }
