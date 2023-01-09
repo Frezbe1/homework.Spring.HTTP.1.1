@@ -9,15 +9,23 @@ public class Main {
     public static void main(String[] args) {
         final var server = new Server(PORT, THREADPOOL_SIZE);
 
-        server.addHandler("GET", "/messages", (request, responseStream) -> {
+        server.addHandler("GET", "/message", (request, responseStream) -> {
             try {
-                server.responseWithoutContent(responseStream, "404", "Not Found");
+                responseStream.write(("Processing GET request \r\n" +
+                        "Параметры запроса: " + request.getQueryParams() + "\r\n").getBytes());
             } catch (IOException e) {
-                throw new RuntimeException(e);
+                System.out.println(e.getMessage());
             }
         });
 
-        server.addHandler("POST", "/messages", (request, responseStream) -> server.responseWithoutContent(responseStream, "503", "Service Unavailable"));
+        server.addHandler("POST", "/message", (request, responseStream) -> {
+            try {
+                responseStream.write(("Значение параметра name : " + request.getQueryParam("id", request.getQueryParams()) + "\r\n").getBytes());
+                System.out.println("Processing POST request");
+            } catch (IOException e) {
+                System.out.println(e.getMessage());
+            }
+        });
 
         server.addHandler("GET", "/", ((request, outputStream) -> server.defaultHandler(outputStream, "index.html")));
 
